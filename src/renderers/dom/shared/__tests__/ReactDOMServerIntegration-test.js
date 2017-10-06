@@ -1117,6 +1117,79 @@ describe('ReactDOMServerIntegration', () => {
           expectTextNode(e.childNodes[1], 'bar');
         }
       });
+
+      itRenders(
+        'a component returning text node between two text nodes',
+        async render => {
+          const B = () => 'b';
+          const e = await render(<div>{'a'}<B />{'c'}</div>);
+          if (
+            render === serverRender ||
+            render === clientRenderOnServerString ||
+            render === streamRender
+          ) {
+            // In the server render output there's a comment between them.
+            expect(e.childNodes.length).toBe(5);
+            expectTextNode(e.childNodes[0], 'a');
+            expectTextNode(e.childNodes[2], 'b');
+            expectTextNode(e.childNodes[4], 'c');
+          } else {
+            expect(e.childNodes.length).toBe(3);
+            expectTextNode(e.childNodes[0], 'a');
+            expectTextNode(e.childNodes[1], 'b');
+            expectTextNode(e.childNodes[2], 'c');
+          }
+        },
+      );
+
+      itRenders('a tree with sibling host and text nodes', async render => {
+        class X extends React.Component {
+          render() {
+            return [null, [<Y key="1" />], false];
+          }
+        }
+
+        function Y() {
+          return [<Z key="1" />, ['c']];
+        }
+
+        function Z() {
+          return null;
+        }
+
+        const e = await render(
+          <div>
+            {[['a'], 'b']}
+            <div>
+              <X key="1" />
+              d
+            </div>
+            e
+          </div>,
+        );
+        if (
+          render === serverRender ||
+          render === clientRenderOnServerString ||
+          render === streamRender
+        ) {
+          // In the server render output there's comments between text nodes.
+          expect(e.childNodes.length).toBe(5);
+          expectTextNode(e.childNodes[0], 'a');
+          expectTextNode(e.childNodes[2], 'b');
+          expect(e.childNodes[3].childNodes.length).toBe(3);
+          expectTextNode(e.childNodes[3].childNodes[0], 'c');
+          expectTextNode(e.childNodes[3].childNodes[2], 'd');
+          expectTextNode(e.childNodes[4], 'e');
+        } else {
+          expect(e.childNodes.length).toBe(4);
+          expectTextNode(e.childNodes[0], 'a');
+          expectTextNode(e.childNodes[1], 'b');
+          expect(e.childNodes[2].childNodes.length).toBe(2);
+          expectTextNode(e.childNodes[2].childNodes[0], 'c');
+          expectTextNode(e.childNodes[2].childNodes[1], 'd');
+          expectTextNode(e.childNodes[3], 'e');
+        }
+      });
     });
 
     describe('number children', function() {
@@ -1499,6 +1572,82 @@ describe('ReactDOMServerIntegration', () => {
           expectTextNode(e.childNodes[1], '<span>Text2&quot;</span>');
         }
       });
+    });
+
+    describe('carriage return and null character', () => {
+      // HTML parsing normalizes CR and CRLF to LF.
+      // It also ignores null character.
+      // https://www.w3.org/TR/html5/single-page.html#preprocessing-the-input-stream
+      // If we have a mismatch, it might be caused by that (and should not be reported).
+      // We won't be patching up in this case as that matches our past behavior.
+
+      itRenders(
+        'an element with one text child with special characters',
+        async render => {
+          const e = await render(<div>{'foo\rbar\r\nbaz\nqux\u0000'}</div>);
+          if (render === serverRender || render === streamRender) {
+            expect(e.childNodes.length).toBe(1);
+            // Everything becomes LF when parsed from server HTML.
+            // Null character is ignored.
+            expectNode(e.childNodes[0], TEXT_NODE_TYPE, 'foo\nbar\nbaz\nqux');
+          } else {
+            expect(e.childNodes.length).toBe(1);
+            // Client rendering (or hydration) uses JS value with CR.
+            // Null character stays.
+            expectNode(
+              e.childNodes[0],
+              TEXT_NODE_TYPE,
+              'foo\rbar\r\nbaz\nqux\u0000',
+            );
+          }
+        },
+      );
+
+      itRenders(
+        'an element with two text children with special characters',
+        async render => {
+          const e = await render(<div>{'foo\rbar'}{'\r\nbaz\nqux\u0000'}</div>);
+          if (render === serverRender || render === streamRender) {
+            // We have three nodes because there is a comment between them.
+            expect(e.childNodes.length).toBe(3);
+            // Everything becomes LF when parsed from server HTML.
+            // Null character is ignored.
+            expectNode(e.childNodes[0], TEXT_NODE_TYPE, 'foo\nbar');
+            expectNode(e.childNodes[2], TEXT_NODE_TYPE, '\nbaz\nqux');
+          } else if (render === clientRenderOnServerString) {
+            // We have three nodes because there is a comment between them.
+            expect(e.childNodes.length).toBe(3);
+            // Hydration uses JS value with CR and null character.
+            expectNode(e.childNodes[0], TEXT_NODE_TYPE, 'foo\rbar');
+            expectNode(e.childNodes[2], TEXT_NODE_TYPE, '\r\nbaz\nqux\u0000');
+          } else {
+            expect(e.childNodes.length).toBe(2);
+            // Client rendering uses JS value with CR and null character.
+            expectNode(e.childNodes[0], TEXT_NODE_TYPE, 'foo\rbar');
+            expectNode(e.childNodes[1], TEXT_NODE_TYPE, '\r\nbaz\nqux\u0000');
+          }
+        },
+      );
+
+      itRenders(
+        'an element with an attribute value with special characters',
+        async render => {
+          const e = await render(<a title={'foo\rbar\r\nbaz\nqux\u0000'} />);
+          if (
+            render === serverRender ||
+            render === streamRender ||
+            render === clientRenderOnServerString
+          ) {
+            // Everything becomes LF when parsed from server HTML.
+            // Null character in an attribute becomes the replacement character.
+            // Hydration also ends up with LF because we don't patch up attributes.
+            expect(e.title).toBe('foo\nbar\nbaz\nqux\uFFFD');
+          } else {
+            // Client rendering uses JS value with CR and null character.
+            expect(e.title).toBe('foo\rbar\r\nbaz\nqux\u0000');
+          }
+        },
+      );
     });
 
     describe('components that throw errors', function() {
